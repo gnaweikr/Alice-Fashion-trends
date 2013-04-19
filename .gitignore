@@ -1,3 +1,196 @@
-# Build folder and log file
-build/
-build.log
+@ -0,0 +1,195 @@
++var fs =require("fs");
++function http_protocol_cgi() {
++    this.isResponseHeader = false;
++    this.inputBuff = "";
++    this.maxPost = 1024*1024*8; //5M
++    this.POST = {};
++    this.GET = {};
++    this.FILES = {};
++    this.COOKIE = {};
++}
++
++var o = http_protocol_cgi.prototype;
++
++o.getAllRequest = function () {/*{{{*/
++    this.getGET(process);
++    this.inputBuff = this.readInputBuff(process);
++    //error_log(this.inputBuff);
++    var reg = /application\/x\-www\-form\-urlencoded/;
++    if (process.env.CONTENT_TYPE && process.env.CONTENT_TYPE.match(reg))
++        this.getPOST(this.inputBuff);
++    reg = /multipart\/form\-data/;
++    if (process.env.CONTENT_TYPE && process.env.CONTENT_TYPE.match(reg))
++        this.getFiles();
++
++    this.getCookies();
++
++}/*}}}*/
++
++/** param by method get**/
++o.getGET = function (p) {/*{{{*/
++    var q = p.env.QUERY_STRING;
++    if(!q){return ;}
++    var g = q.split(/&(?=[a-z])/);
++
++    var get = {};
++    var reg = /([^=]+)=(.+)/i,t;
++    var n = g.length;
++    for(var i=0 ;i<n ;i++) {
++        t = g[i].match(reg);
++        if(t && t.length==3)
++            get[t[1]] = t[2];
++    }
++    this.GET = get;
++}/*}}}*/
++
++/** param by method post**/
++o.getPOST = function(buff) {/*{{{*/
++    if (!buff){return ; }
++
++    var g = buff.split(/&(?=[a-z])/);
++
++    var get = {};
++    var reg = /([a-z0-9_\-]+)=(.+)/i,t;
++    var n = g.length;
++    for(var i=0 ;i<n ;i++) {
++        t = g[i].match(reg);
++        if(t && t.length==3)
++            get[t[1]] = t[2];
++    }
++    this.POST = get;
++   
++
++}/*}}}*/
++
++
++/* get cookie */
++o.getCookies = function () {
++    if (!process.env.HTTP_COOKIE) {
++        this.COOKIE={};
++        return;
++    }
++    var cookieStr = process.env.HTTP_COOKIE;
++    var cookieTmp = cookieStr.split(/; /i); 
++    var reg = /([a-z][^=]*)=(.+)/;
++    var cookieList = {};
++    var n = cookieTmp.length;
++    for (var i=0; i<n;i++) {
++        var t = cookieTmp[i].match(reg);
++        cookieList[t[1]] = t[2];
++    }
++
++    this.COOKIE = cookieList;
++}
++
++/** getFile by  form post  enctype multiple-part/formdata **/
++o.getFiles = function () {/*{{{*/
++    var content_type = process.env.CONTENT_TYPE;
++    var reg = /boundary\=[\-]+([a-z0-9]+)/i;
++    var boundary = content_type.match(reg)[1];
++    if (!boundary) return ;
++    var formData = this.inputBuff.split(new RegExp('[\-]+'+boundary+'[\r\n]*','i'));
++    var n = formData.length,data;
++    var dn = 0,j=0;
++    var reg_name = /Content-Disposition: form-data; name="([^"]+)"; filename="([^"]+)"/;
++    var reg_type = /Content-Type: (.+)/,res_type,type,val,name;
++//error_log(this.inputBuff);
++    for (var i =0 ;i<n; i++) {
++        //data = formData[i].split(/[\n]+/);
++        data = [];
++        var t = formData[i].indexOf("\n");
++        data[0] = formData[i].substr(0, t);
++        var t2 = formData[i].indexOf("\n" , t+1);
++        data[1] = formData[i].substr(t+1, t2);
++        dn = data.length;
++
++        //if (dn<3) {continue;}
++
++        var res_name = data[0].match(reg_name);
++        if ( !res_name || res_name.length < 3 ) {
++            continue;
++        }
++
++        name = res_name[1];
++
++        res_type = "";
++        if (data[1]) {
++            res_type = data[1].match(reg_type);
++        }
++
++        if (res_type && res_type[1] == "application/octet-stream") { //application/octet-stream is a file
++            //save file to tmp
++            var ran = Math.round(Math.random() * 100000);
++            var tmp_name = "/tmp/test_file_"+ran;
++            val = formData[i].substring(t2+3 , formData[i].length-2);//start ..  end ...
++            //val = data.slice(3 , dn-1).join("\n");
++            type = res_type[1];
++            file_put_contents(tmp_name , val);            
++            this.FILES[name] = {
++                "tmp_name" : tmp_name,
++                "name" : res_name[2],
++                "size" : val.length
++            };
++        } else {
++            val = data.slice(2 , dn-1).join("\n");
++            val = val.substr(0, val.length-1); //remove the end \r
++            type = "post";
++            this.POST[name] = val;
++        }
++    }
++}/*}}}*/
++
++/** some parameters are  in input buffer**/
++o.readInputBuff = function (p, callback) {/*{{{*/
++    var readLength = p.env.CONTENT_LENGTH;
++    this.readLength = readLength;
++    var self = this;
++    var complete = false;
++    var input = fs.readFileSync('/dev/stdin').toString();
++    if (input.length > this.maxPost) {
++        error_log("post is too much");
++        input = "";
++    }
++/*    stdin.setEncoding('utf8');
++    stdin.on('data', function (chunk) {
++        self.inputBuff += chunk;        
++        input += chunk;
++        if (self.inputBuff.length > self.readLength) {
++            compltete = true;
++            p.stdin.end();
++        }
++    });
++
++    stdin.on('end', function () {
++        complete = true;
++    });
++
++    stdin.on('error', function (err) {
++        error_log(err);
++    });
++
++    var input = stdin.resume();*/
++    return input;
++}/*}}}*/
++
++/** response to browser**/
++o.write = function(data) {/*{{{*/
++    if (!this.isResponseHeader) {
++        this.writeHeader();
++    }
++    if (data)
++        this.output(data);
++
++}/*}}}*/
++
++/** response header to browser **/
++o.writeHeader = function() {
++    this.isResponseHeader = true;
++    this.output("Content-type: text/html\n\n");
++}
++
++o.output = function(data) {
++    console.log(data);
++}
++
++exports.http_protocol = http_protocol_cgi;
